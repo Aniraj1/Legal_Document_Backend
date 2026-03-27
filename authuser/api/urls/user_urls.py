@@ -9,4 +9,9 @@ urlpatterns = [
         user_views.UserRegister.as_view(),
         name="UserRegister",
     ),
+    path(
+        f"{config('PROJECT_NAME')}/user/login/",
+        user_views.UserLogin.as_view(),
+        name="Userlogin",
+    ),
 ]
