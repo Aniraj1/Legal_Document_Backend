@@ -1,3 +1,4 @@
+import uuid
 from django.contrib.auth.models import (
     AbstractBaseUser,
     PermissionsMixin,
@@ -39,6 +40,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     User model which contain all the basic information to create user
     """
 
+    id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, editable=False, db_column="ID"
+    )
     username = models.CharField(
         max_length=255, unique=True, db_column="USERNAME"
     )
@@ -65,7 +69,9 @@ class UserDetail(models.Model):
     """
     User detail model where all extra information about user are store
     """
-
+    id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, editable=False, db_column="ID"
+    )
     user = models.OneToOneField(
         User,
         on_delete=models.CASCADE,
