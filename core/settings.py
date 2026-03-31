@@ -46,7 +46,7 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "corsheaders",
     'authuser',
-    'fileupload',
+    'fileUpload',
 ]
 
 MIDDLEWARE = [
