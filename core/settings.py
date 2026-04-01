@@ -146,6 +146,17 @@ REST_FRAMEWORK = {
     },
 }
 
+# Vector Database Configuration (Upstash)
+UPSTASH_VECTOR_REST_URL = config("UPSTASH_VECTOR_REST_URL", default="")
+UPSTASH_VECTOR_REST_TOKEN = config("UPSTASH_VECTOR_REST_TOKEN", default="")
+
+# File Upload Configuration
+FILE_UPLOAD_MAX_SIZE_MB = 50
+FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.txt']
+
+# Document Processing Configuration
+CHUNKING_TARGET_SIZE = 400  # tokens per chunk
+
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(
