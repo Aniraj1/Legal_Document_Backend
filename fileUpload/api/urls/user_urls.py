@@ -7,4 +7,7 @@ urlpatterns = [
     path(
         "upload/", user_views.UploadFileView.as_view(), name="UploadFileView"    
     ),
+    path(
+        "ask-groq/", user_views.AskGroqView.as_view(), name="AskGroqView"
+    ),
 ]
