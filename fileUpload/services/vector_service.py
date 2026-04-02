@@ -163,14 +163,14 @@ class VectorService:
                 'error': str(e)
             }
 
-    def search_document_chunks(self, user_id, field_id, query, top_k=5):
+    def search_document_chunks(self, user_id, file_id, query, top_k=5):
         """
         Search Upstash Vector DB for chunks relevant to a query, filtered by user and file.
         Used for RAG (Ask Groq) queries.
         
         Args:
             user_id: User UUID (string) - for access control
-            field_id: File/Document UUID (string) - to search within specific document
+            file_id: File/Document UUID (string) - to search within specific document
             query: Search query text
             top_k: Number of results to return (default 5)
         
@@ -187,21 +187,21 @@ class VectorService:
                 ]
         
         Raises:
-            ValueError: If user_id or field_id is invalid
+            ValueError: If user_id or file_id is invalid
             ConnectionError: If Upstash is unavailable
         """
         import logging
         logger = logging.getLogger(__name__)
         
-        if not user_id or not field_id:
-            raise ValueError("user_id and field_id are required")
+        if not user_id or not file_id:
+            raise ValueError("user_id and file_id are required")
         
         try:
             # Generate vector for query using same method as chunks
             query_vector = self._generate_simple_vector(query, self.VECTOR_DIMENSION)
             
             user_id_str = str(user_id)
-            field_id_str = str(field_id)
+            file_id_str = str(file_id)
             
             # Query Upstash WITHOUT filter (filter param not supported in this SDK version)
             # We'll manually filter results in Python for security
@@ -275,7 +275,7 @@ class VectorService:
                                 extracted_file_id = parts[0]
                                 logger.debug(f"[VectorSearch] Extracted file_id from vector_id: {extracted_file_id}")
                                 # Only include if file_id matches
-                                if extracted_file_id == field_id_str:
+                                if extracted_file_id == file_id_str:
                                     logger.debug(f"[VectorSearch] ✓ File ID match found - including result {idx}")
                                     formatted_result = {
                                         'vector_id': vector_id,
@@ -303,17 +303,17 @@ class VectorService:
                             
                             logger.debug(f"[VectorSearch] Metadata keys: {list(metadata.keys())}")
                             logger.debug(f"[VectorSearch] Metadata: user_id='{result_user_id}', file_id='{result_file_id}'")
-                            logger.debug(f"[VectorSearch] Expected: user_id='{user_id_str}', file_id='{field_id_str}'")
+                            logger.debug(f"[VectorSearch] Expected: user_id='{user_id_str}', file_id='{file_id_str}'")
                             
                             # Normalize UUIDs for comparison (remove hyphens for comparison)
                             result_user_normalized = result_user_id.replace('-', '')
                             expected_user_normalized = user_id_str.replace('-', '')
                             result_file_normalized = result_file_id.replace('-', '')
-                            expected_file_normalized = field_id_str.replace('-', '')
+                            expected_file_normalized = file_id_str.replace('-', '')
                             
                             # Only include results that match both user_id and file_id
                             if ((result_user_normalized == expected_user_normalized or result_user_id == user_id_str) and
-                                (result_file_normalized == expected_file_normalized or result_file_id == field_id_str)):
+                                (result_file_normalized == expected_file_normalized or result_file_id == file_id_str)):
                                 logger.debug(f"[VectorSearch] ✓ Match found - including result {idx}")
                                 formatted_result = {
                                     'vector_id': vector_id,
@@ -330,7 +330,7 @@ class VectorService:
                         logger.warning(f"[VectorSearch] Error processing result {idx}: {str(e)}", exc_info=True)
                         continue
                 
-                logger.info(f"[VectorSearch] Found {len(formatted_results)} matching chunks for user={user_id_str}, file={field_id_str} (filtered from {len(result_list)} total)")
+                logger.info(f"[VectorSearch] Found {len(formatted_results)} matching chunks for user={user_id_str}, file={file_id_str} (filtered from {len(result_list)} total)")
                 
                 # If we got no results after filtering, log what was in the unfiltered results
                 if not formatted_results and result_list:
@@ -351,3 +351,110 @@ class VectorService:
         except Exception as e:
             logger.error(f"[VectorSearch] Vector search failed: {str(e)}")
             raise ConnectionError(f"Vector search failed: {str(e)}")
+
+    def delete_chunks(self, user_id, file_id):
+        """
+        Delete all vectors belonging to a specific user's file.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if not user_id or not file_id:
+            return {
+                'success': False, 
+                'deleted_count': 0, 
+                'error': 'user_id and file_id are required'
+            }
+
+        try:
+            file_id_str = str(file_id)
+            
+            # Option A: Delete by Prefix (Fastest, based on your fallback logic)
+            result = self.index.delete(prefix=f"{file_id_str}_chunk_")
+            
+            # Option B: Delete by Metadata Filter (Use this if your prefix naming isn't 100% guaranteed)
+            # result = self.index.delete(filter=f"user_id = '{user_id}' AND file_id = '{file_id_str}'")
+
+            # Extract the deleted count (handles both dict and object responses based on SDK version)
+            deleted_count = result.deleted if hasattr(result, 'deleted') else result.get('deleted', 0)
+
+            logger.info(f"[VectorDelete] Deleted {deleted_count} chunks for file={file_id_str}")
+
+            return {
+                'success': True,
+                'deleted_count': deleted_count,
+                'error': None
+            }
+
+        except Exception as e:
+            logger.error(f"[VectorDelete] Failed to delete chunks: {str(e)}", exc_info=True)
+            return {
+                'success': False,
+                'deleted_count': 0,
+                'error': str(e)
+            }
+
+    def delete_all_user_chunks(self, user_id, file_ids=None):
+        """
+        Delete all vectors for a user with a fast metadata-filter pass,
+        then optional file-id prefix fallback for legacy vectors that may
+        not contain metadata.
+
+        Args:
+            user_id: User UUID
+            file_ids: Optional iterable of file UUIDs for prefix fallback
+
+        Returns:
+            dict: {'success': bool, 'deleted_count': int, 'error': str}
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if not user_id:
+            return {
+                'success': False,
+                'deleted_count': 0,
+                'error': 'user_id is required'
+            }
+
+        try:
+            total_deleted = 0
+            user_id_str = str(user_id)
+
+            # Fast path for vectors with metadata
+            filter_result = self.index.delete(filter=f"user_id = '{user_id_str}'")
+            deleted_by_filter = (
+                filter_result.deleted
+                if hasattr(filter_result, 'deleted')
+                else filter_result.get('deleted', 0)
+            )
+            total_deleted += deleted_by_filter
+
+            # Fallback for legacy vectors missing metadata
+            for file_id in (file_ids or []):
+                file_id_str = str(file_id)
+                prefix_result = self.index.delete(prefix=f"{file_id_str}_chunk_")
+                deleted_by_prefix = (
+                    prefix_result.deleted
+                    if hasattr(prefix_result, 'deleted')
+                    else prefix_result.get('deleted', 0)
+                )
+                total_deleted += deleted_by_prefix
+
+            logger.info(
+                f"[VectorDelete] Deleted {total_deleted} vectors for user={user_id_str}"
+            )
+
+            return {
+                'success': True,
+                'deleted_count': total_deleted,
+                'error': None
+            }
+
+        except Exception as e:
+            logger.error(f"[VectorDelete] Failed to delete all user chunks: {str(e)}", exc_info=True)
+            return {
+                'success': False,
+                'deleted_count': 0,
+                'error': str(e)
+            }

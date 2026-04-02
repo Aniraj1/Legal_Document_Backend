@@ -18,7 +18,7 @@ class AskGroqSerializer(serializers.Serializer):
     """
     Serializer for Ask Groq API request (RAG Query)
     """
-    field_id = serializers.UUIDField(
+    file_id = serializers.UUIDField(
         required=True,
         help_text="UUID of the uploaded file/document"
     )

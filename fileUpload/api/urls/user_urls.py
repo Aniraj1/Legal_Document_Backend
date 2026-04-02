@@ -10,4 +10,10 @@ urlpatterns = [
     path(
         "ask-groq/", user_views.AskGroqView.as_view(), name="AskGroqView"
     ),
+    path(
+        "remove-file/<str:file_id>/", user_views.RemoveUploadedFileView.as_view(), name="RemoveUploadedFileView"
+    ),
+    path(
+        "remove-files/", user_views.RemoveAllUserUploadedFileView.as_view(), name="RemoveAllUserUploadedFileView"
+    )
 ]
