@@ -43,13 +43,13 @@ Document Context will follow. Answer ONLY from this context."""
         """Initialize the service with vector DB access"""
         self.vector_service = VectorService()
 
-    def process_query(self, user_id, field_id, query, model=None, chat_history=None):
+    def process_query(self, user_id, file_id, query, model=None, chat_history=None):
         """
         Main orchestration method for RAG pipeline.
         
         Args:
             user_id: User UUID (for authorization)
-            field_id: File/Document UUID
+            file_id: File/Document UUID
             query: User question
             model: Groq model to use (optional, defaults to llama-3.1-8b-instant)
         
@@ -67,7 +67,7 @@ Document Context will follow. Answer ONLY from this context."""
         
         try:
             # Step 1: Validate user has access to file
-            file_obj = self._validate_file_access(user_id, field_id)
+            file_obj = self._validate_file_access(user_id, file_id)
             if not file_obj:
                 return {
                     'answer': None,
@@ -78,7 +78,7 @@ Document Context will follow. Answer ONLY from this context."""
                 }
             
             # Step 2: Retrieve relevant chunks from vector DB
-            chunks = self._retrieve_chunks(user_id, field_id, query, self.DEFAULT_TOP_K)
+            chunks = self._retrieve_chunks(user_id, file_id, query, self.DEFAULT_TOP_K)
             chat_history = chat_history or []
             # Step 3: Validate retrieval quality
             is_valid, quality_msg = self._validate_retrieval_quality(chunks)
@@ -89,7 +89,7 @@ Document Context will follow. Answer ONLY from this context."""
                     'sources': [],
                     'confidence': 'none',
                     'metadata': {
-                        'file_id': str(field_id),
+                        'file_id': str(file_id),
                         'file_name': file_obj.file_name,
                         'chunks_retrieved': 0,
                         'processing_time_ms': int((time.time() - start_time) * 1000),
@@ -113,7 +113,7 @@ Document Context will follow. Answer ONLY from this context."""
                     'sources': [],
                     'confidence': 'none',
                     'metadata': {
-                        'file_id': str(field_id),
+                        'file_id': str(file_id),
                         'file_name': file_obj.file_name,
                         'chunks_retrieved': len(chunks),
                         'processing_time_ms': int((time.time() - start_time) * 1000),
@@ -133,7 +133,7 @@ Document Context will follow. Answer ONLY from this context."""
                 'sources': sources,
                 'confidence': confidence,
                 'metadata': {
-                    'file_id': str(field_id),
+                    'file_id': str(file_id),
                     'file_name': file_obj.file_name,
                     'chunks_retrieved': len(chunks),
                     'processing_time_ms': int((time.time() - start_time) * 1000),
@@ -153,7 +153,7 @@ Document Context will follow. Answer ONLY from this context."""
                 'error': f'Service error: {str(e)}'
             }
 
-    def _validate_file_access(self, user_id, field_id):
+    def _validate_file_access(self, user_id, file_id):
         """
         Verify user has access to the requested file.
         
@@ -161,16 +161,16 @@ Document Context will follow. Answer ONLY from this context."""
             FileResource object if access granted, None otherwise
         """
         try:
-            file_obj = FileResource.objects.get(id=field_id, user_id=user_id)
+            file_obj = FileResource.objects.get(id=file_id, user_id=user_id)
             return file_obj
         except FileResource.DoesNotExist:
-            logger.warning(f"Unauthorized file access attempt: user={user_id}, file={field_id}")
+            logger.warning(f"Unauthorized file access attempt: user={user_id}, file={file_id}")
             return None
         except Exception as e:
             logger.error(f"File validation error: {str(e)}")
             return None
 
-    def _retrieve_chunks(self, user_id, field_id, query, top_k=5):
+    def _retrieve_chunks(self, user_id, file_id, query, top_k=5):
         """
         Query Upstash Vector DB for relevant chunks.
         
@@ -178,11 +178,11 @@ Document Context will follow. Answer ONLY from this context."""
             list[dict]: Top K chunks with metadata and scores
         """
         try:
-            logger.debug(f"[AskGroqService] Retrieving chunks for user={user_id}, field={field_id}, query_length={len(query)}")
+            logger.debug(f"[AskGroqService] Retrieving chunks for user={user_id}, field={file_id}, query_length={len(query)}")
             
             chunks = self.vector_service.search_document_chunks(
                 user_id=str(user_id),
-                field_id=str(field_id),
+                file_id=str(file_id),
                 query=query,
                 top_k=top_k
             )
