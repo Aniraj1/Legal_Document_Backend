@@ -1,4 +1,4 @@
-MAX_FILE_SIZE_MB = 0.5
+MAX_FILE_SIZE_MB = 50
 
 
 def file_size_validate(size):
