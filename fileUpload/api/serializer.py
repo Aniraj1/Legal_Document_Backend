@@ -14,6 +14,12 @@ class FileResourceSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'file_name', 'file_size', 'user_id']
 
 
+class FileResourceListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FileResource
+        fields = ['id', 'file_name']
+
+
 class AskGroqSerializer(serializers.Serializer):
     """
     Serializer for Ask Groq API request (RAG Query)
