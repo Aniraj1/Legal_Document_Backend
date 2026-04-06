@@ -12,6 +12,22 @@ urlpatterns = [
     path(
         f"{config('PROJECT_NAME')}/user/login/",
         user_views.UserLogin.as_view(),
-        name="Userlogin",
+        name="UserLogin",
     ),
+    path(
+        f"{config('PROJECT_NAME')}/user/logout/",
+        user_views.UserLogout.as_view(),
+        name="UserLogout",
+    ),
+    path(
+        f"{config('PROJECT_NAME')}/refresh-token/",
+        user_views.GenerateTokenFromRefresh.as_view(),
+        name="GenerateTokenFromRefresh",
+    ),
+    path(
+        "logged-in-user/change-password/",
+        user_views.LoginUserChangePasswordView.as_view(),
+        name="LoginUserChangePasswordView",
+    ),
+    path("user-detail/", user_views.UserDetail.as_view(), name="UserDetail"),
 ]

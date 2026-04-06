@@ -15,5 +15,8 @@ urlpatterns = [
     ),
     path(
         "remove-files/", user_views.RemoveAllUserUploadedFileView.as_view(), name="RemoveAllUserUploadedFileView"
-    )
+    ),
+    path(
+        "get-files/", user_views.ListUserFilesView.as_view(), name="ListUserFilesView"
+    ),
 ]

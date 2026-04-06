@@ -8,7 +8,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.throttling import UserRateThrottle
 from globalutils.convert_size import convert_bytes_to_formatted_size
 
-from fileUpload.api.serializer import FileResourceSerializer, AskGroqSerializer
+from fileUpload.api.serializer import FileResourceSerializer, AskGroqSerializer, FileResourceListSerializer
 from fileUpload.model.fileresources import FileResource
 from fileUpload.services.file_validator import MAX_FILE_SIZE_MB, file_size_validate
 from fileUpload.services.document_processor import DocumentProcessor
@@ -140,6 +140,31 @@ class UploadFileView(GenericAPIView):
                 status=status.HTTP_200_OK
             )
         
+
+class ListUserFilesView(GenericAPIView):
+    queryset = FileResource.objects.all()
+    serializer_class = FileResourceListSerializer
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [UserRateThrottle]
+
+    @extend_schema(tags=["fileUpload"])
+    def get(self, request, *args, **kwargs):
+        """
+        List all files uploaded by the authenticated user.
+        """
+        list_of_files = FileResource.objects.filter(user_id=request.user.id)
+        filter_obj = self.filter_queryset(list_of_files)
+        data = self.paginate_queryset(filter_obj)
+        request_obj = self.serializer_class(data, many=True)
+        return project_return(
+            message="Successfully fetched.",
+            data=self.get_paginated_response(request_obj.data),
+            status=status.HTTP_200_OK
+        )
+
+
+
 
 class AskGroqView(GenericAPIView):
     """
