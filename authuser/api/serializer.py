@@ -21,12 +21,7 @@ class UserDetailSerializer(serializers.ModelSerializer):
         model = models.UserDetail
         fields = [
             "first_name",
-            "last_name",
-            "street_address",
-            "city",
-            "state",
-            "zip_code",
-            "country",
+            "last_name"
         ]
 
 
@@ -39,13 +34,10 @@ class UserSerializer(serializers.ModelSerializer):
             "id",
             "username",
             "email",
-            "phone",
             "is_active",
             "is_user",
             "is_superuser",
-            "created_at",
-            "updated_at",
-            "roles",
+            "is_agreement",
             "detail",
         ]
 
