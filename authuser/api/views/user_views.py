@@ -129,16 +129,16 @@ class UserDetail(GenericAPIView):
     permission_classes = [IsAuthenticated]
     throttle_classes = [UserRateThrottle]
 
-    @extend_schema(tags=["authuser"])
-    def get(self, request, *args, **kwargs):
-        user_obj = self.serializer_class(
-            self.get_queryset().objects.filter(user=request.user).first()
-        )
-        return project_return(
-            message="Successfully fetched.",
-            data=user_obj.data,
-            status=status.HTTP_200_OK,
-        )
+    # @extend_schema(tags=["authuser"])
+    # def get(self, request, *args, **kwargs):
+    #     user_obj = self.serializer_class(
+    #         self.get_queryset().objects.filter(user=request.user).first()
+    #     )
+    #     return project_return(
+    #         message="Successfully fetched.",
+    #         data=user_obj.data,
+    #         status=status.HTTP_200_OK,
+    #     )
 
     @extend_schema(tags=["authuser"])
     def post(self, request, *args, **kwargs):
@@ -183,6 +183,24 @@ class UserDetail(GenericAPIView):
             status=status.HTTP_400_BAD_REQUEST,
         )
     
+
+class UserDetailView(GenericAPIView):
+    queryset = models.User
+    serializer_class = serializer.UserSerializer
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [UserRateThrottle]
+
+    @extend_schema(tags=["authuser"])
+    def get(self, request, *args, **kwargs):
+        user_obj = self.serializer_class(
+            self.get_queryset().objects.filter(id=request.user.id).first()  
+        )
+        return project_return(
+            message="Successfully fetched.",
+            data=user_obj.data,
+            status=status.HTTP_200_OK,
+        )
 
 class UserLogout(GenericAPIView):
     """

@@ -26,7 +26,9 @@ class UserDetailSerializer(serializers.ModelSerializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
-    detail = UserDetailSerializer(read_only=True, source="user_detail")
+    # detail = UserDetailSerializer(read_only=True, source="user_detail")
+    first_name = serializers.CharField(source="user_detail.first_name", read_only=True)
+    last_name = serializers.CharField(source="user_detail.last_name", read_only=True)
 
     class Meta:
         model = models.User
@@ -34,11 +36,9 @@ class UserSerializer(serializers.ModelSerializer):
             "id",
             "username",
             "email",
-            "is_active",
-            "is_user",
-            "is_superuser",
             "is_agreement",
-            "detail",
+            "first_name",
+            "last_name",
         ]
 
 
