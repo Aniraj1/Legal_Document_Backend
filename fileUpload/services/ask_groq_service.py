@@ -1,7 +1,7 @@
 import logging
 import time
 from django.conf import settings
-from fileUpload.services.vector_service import VectorService
+from fileUpload.services.langchain_document_service import LangChainDocumentService
 from fileUpload.model.fileresources import FileResource
 
 logger = logging.getLogger(__name__)
@@ -40,8 +40,8 @@ Document Context will follow. Answer ONLY from this context."""
     MIN_CHUNKS_REQUIRED = 2
 
     def __init__(self):
-        """Initialize the service with vector DB access"""
-        self.vector_service = VectorService()
+        """Initialize the service with vector DB access via LangChain"""
+        self.document_service = LangChainDocumentService()
 
     def process_query(self, user_id, file_id, query, model=None, chat_history=None):
         """
@@ -172,20 +172,30 @@ Document Context will follow. Answer ONLY from this context."""
 
     def _retrieve_chunks(self, user_id, file_id, query, top_k=5):
         """
-        Query Upstash Vector DB for relevant chunks.
+        Query Upstash Vector DB for relevant chunks using LangChain service.
         
         Returns:
             list[dict]: Top K chunks with metadata and scores
         """
         try:
-            logger.debug(f"[AskGroqService] Retrieving chunks for user={user_id}, field={file_id}, query_length={len(query)}")
+            logger.debug(f"[AskGroqService] Retrieving chunks for user={user_id}, file={file_id}, query_length={len(query)}")
             
-            chunks = self.vector_service.search_document_chunks(
+            # Use LangChain service to search
+            results = self.document_service.search(
+                query=query,
                 user_id=str(user_id),
                 file_id=str(file_id),
-                query=query,
                 top_k=top_k
             )
+            
+            # Convert LangChain Document objects with scores to dict format
+            chunks = []
+            for doc, score in results:
+                chunks.append({
+                    'text': doc.page_content,
+                    'metadata': doc.metadata,
+                    'score': score,
+                })
             
             logger.info(f"[AskGroqService] Retrieved {len(chunks)} chunks")
             

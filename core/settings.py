@@ -161,6 +161,14 @@ FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.txt']
 # Document Processing Configuration
 CHUNKING_TARGET_SIZE = 400  # tokens per chunk
 
+# LangChain Configuration
+LANGCHAIN_CONFIG = {
+    'EMBEDDING_MODEL': config('LANGCHAIN_EMBEDDING_MODEL', default='huggingface'),
+    'CHUNK_SIZE': config('LANGCHAIN_CHUNK_SIZE', cast=int, default=1000),
+    'CHUNK_OVERLAP': config('LANGCHAIN_CHUNK_OVERLAP', cast=int, default=100),
+    'EMBEDDING_DIMENSION': config('LANGCHAIN_EMBEDDING_DIMENSION', cast=int, default=1024),
+}
+
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(

@@ -1,3 +1,4 @@
+import logging
 from django.db import transaction
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
@@ -11,11 +12,11 @@ from globalutils.convert_size import convert_bytes_to_formatted_size
 from fileUpload.api.serializer import FileResourceSerializer, AskGroqSerializer, FileResourceListSerializer
 from fileUpload.model.fileresources import FileResource
 from fileUpload.services.file_validator import MAX_FILE_SIZE_MB, file_size_validate
-from fileUpload.services.document_processor import DocumentProcessor
-from fileUpload.services.chunking_service import ChunkingService
-from fileUpload.services.vector_service import VectorService
+from fileUpload.services.langchain_document_service import LangChainDocumentService
 from fileUpload.services.ask_groq_service import AskGroqService
 from globalutils.returnobject import project_return
+
+logger = logging.getLogger(__name__)
 
 
 class UploadFileView(GenericAPIView):
@@ -28,10 +29,12 @@ class UploadFileView(GenericAPIView):
     @extend_schema(tags=["fileUpload"])
     def post(self, request, *args, **kwargs):
         """
+        File upload endpoint using LangChain service.
+        
         - Validate file (type, size)
-        - Extract text from file (in-memory)
-        - Intelligently chunk document
-        - Uploads chunk to Upstash Vector DB
+        - Load and extract text from file using LangChain
+        - Intelligently chunk document with semantic awareness
+        - Generate embeddings and upload to Upstash Vector DB
         - Save metadata to SQLite (ONLY if all above succeed)
         
         If ANY step fails → Exception raised → Automatic rollback
@@ -45,6 +48,7 @@ class UploadFileView(GenericAPIView):
                 error="File is required.",
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        
         if not file.content_type == "application/pdf":
             return project_return(
                 message="Invalid file type.",
@@ -53,7 +57,6 @@ class UploadFileView(GenericAPIView):
             )
         
         validation = file_size_validate(file.size)
-        
         if not validation:
             return project_return(
                 message="File size exceeds limit.",
@@ -61,83 +64,88 @@ class UploadFileView(GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         
-        with transaction.atomic():
-            
-            file_resource = FileResource.objects.create(
-            file_name=file.name,
-            file_size=file.size,
-            user_id=request.user
-            )
-            # Step 2: Extract text from file
-            doc_data = DocumentProcessor.extract_text(file)
-
-            if not doc_data:
-                return project_return(
-                    message="Failed to extract text from file.",
-                    error="The uploaded file could not be processed. Please ensure it is a valid PDF.",
-                    status=status.HTTP_400_BAD_REQUEST,
+        try:
+            with transaction.atomic():
+                # Create file resource first
+                file_resource = FileResource.objects.create(
+                    file_name=file.name,
+                    file_size=file.size,
+                    user_id=request.user
                 )
-
-            text = doc_data['text']
-            extraction_metadata = doc_data['metadata']
-            
-            if not text or not text.strip():
-                return project_return(
-                    message="Failed to extract text from file.",
-                    error="The uploaded file contains no readable text.",
-                    status=status.HTTP_400_BAD_REQUEST,
+                
+                # Initialize LangChain service
+                service = LangChainDocumentService()
+                
+                # Step 2: Load document with LangChain
+                documents = service.load_document(file)
+                if not documents:
+                    return project_return(
+                        message="Failed to load document.",
+                        error="Could not extract text from the PDF file.",
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                
+                # Step 3: Chunk document intelligently with semantic awareness
+                chunks = service.chunk_document(
+                    documents=documents,
+                    user_id=str(request.user.id),
+                    file_id=str(file_resource.id),
+                    file_name=file.name
                 )
-            
-            # Step 3: Chunk document intelligently
-            chunks = ChunkingService.chunk_document(
-                text=text,
-                user_id=request.user.id,
-                file_id=file_resource.id,
-                file_name=file.name
-            )
-            
-            if not chunks:
-                return project_return(
-                    message="Failed to chunk document.",
-                    error="The extracted text could not be chunked into meaningful sections.",
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                
+                if not chunks:
+                    return project_return(
+                        message="Failed to chunk document.",
+                        error="Could not split document into chunks.",
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
+                
+                # Step 4: Upload chunks to Upstash Vector DB with embeddings
+                uploaded_count = service.upload_to_vector_store(
+                    chunks=chunks,
+                    user_id=str(request.user.id),
+                    file_id=str(file_resource.id)
                 )
-            
-            # Step 4: Upload chunks to Upstash Vector DB
-            vector_service = VectorService()
-            upload_result = vector_service.upload_chunks(
-                chunks=chunks,
-                user_id=str(request.user.id),
-                file_id=file_resource.id
-            )
-            
-            if not upload_result['success']:
-                return project_return(
-                    message="Failed to upload chunks to vector database.",
-                    error=f"Vector upload failed: {upload_result['error']}",
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                
+                if uploaded_count == 0:
+                    return project_return(
+                        message="Failed to upload chunks to vector database.",
+                        error="No chunks were uploaded to the vector store.",
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
+                
+                # Return success response
+                data = {
+                    "id": str(file_resource.id),
+                    "file_name": file_resource.file_name,
+                    "file_size": convert_bytes_to_formatted_size(file_resource.file_size),
+                    "user_id": str(file_resource.user_id_id),
+                    "chunks_created": uploaded_count,
+                    "extraction_metadata": {
+                        "extraction_method": "langchain_pdf_loader",
+                        "total_documents": len(documents),
+                        "total_chunks": len(chunks),
+                        "embedding_model": "groq",
+                    },
+                }
+                
+                logger.info(
+                    f"File {file.name} uploaded successfully by user {request.user.id} "
+                    f"with {uploaded_count} chunks"
                 )
-            
-            # Step 5: CREATE FileResource in SQLite (ONLY if all above succeeded)
-            # Reset file pointer for size reading
-            file.seek(0)
-            
-            
-            
-            # Return success response
-            data = {
-                "id": str(file_resource.id),
-                "file_name": file_resource.file_name,
-                "file_size": convert_bytes_to_formatted_size(file_resource.file_size),
-                "user_id": str(file_resource.user_id_id),
-                "chunks_created": upload_result['chunk_count'],
-                "extraction_metadata": extraction_metadata,
-            }
-            
+                
+                return project_return(
+                    message="File uploaded, processed, and stored successfully.",
+                    data=data,
+                    status=status.HTTP_200_OK
+                )
+        
+        except Exception as e:
+            logger.error(f"File upload failed: {str(e)}")
             return project_return(
-                message="File uploaded, processed, and stored successfully.",
-                data=data,
-                status=status.HTTP_200_OK
+                message="File upload failed.",
+                error=str(e),
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         
 
@@ -289,16 +297,16 @@ class RemoveUploadedFileView(GenericAPIView):
                 )
             
             # Delete chunks from vector DB
-            vector_service = VectorService()
-            delete_result = vector_service.delete_chunks(
+            service = LangChainDocumentService()
+            delete_success = service.delete_file_chunks(
                 user_id=str(request.user.id),
-                file_id=file_id
+                file_id=str(file_id),
             )
 
-            if not delete_result.get('success'):
+            if not delete_success:
                 return project_return(
                     message="Failed to delete file vectors.",
-                    error=delete_result.get('error', 'Unknown vector delete error.'),
+                    error='Unknown vector delete error.',
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
             
@@ -337,9 +345,9 @@ class RemoveAllUserUploadedFileView(GenericAPIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
             
-            vector_service = VectorService()
             file_ids = list(file_resources.values_list('id', flat=True))
-            delete_result = vector_service.delete_all_user_chunks(
+            service = LangChainDocumentService()
+            delete_result = service.delete_all_user_chunks(
                 user_id=str(user_id),
                 file_ids=file_ids,
             )
