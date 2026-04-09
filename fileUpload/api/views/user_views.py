@@ -1,4 +1,5 @@
 import logging
+import time
 from django.db import transaction
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
@@ -14,6 +15,12 @@ from fileUpload.model.fileresources import FileResource
 from fileUpload.services.file_validator import MAX_FILE_SIZE_MB, file_size_validate
 from fileUpload.services.langchain_document_service import LangChainDocumentService
 from fileUpload.services.ask_groq_service import AskGroqService
+from fileUpload.services.analytics_service import (
+    clear_user_analytics,
+    get_user_analytics_summary,
+    hash_query_text,
+    track_user_analytics_event,
+)
 from globalutils.returnobject import project_return
 
 logger = logging.getLogger(__name__)
@@ -40,9 +47,20 @@ class UploadFileView(GenericAPIView):
         If ANY step fails → Exception raised → Automatic rollback
         """
         
+        start_time = time.time()
+
         # Step 1: Get file and validate
         file = request.FILES.get("file")
         if not file:
+            track_user_analytics_event(
+                user_id=str(request.user.id),
+                event_data={
+                    "eventType": "upload",
+                    "status": "error",
+                    "totalMs": int((time.time() - start_time) * 1000),
+                    "errorMessage": "File is required.",
+                },
+            )
             return project_return(
                 message="No file provided.",
                 error="File is required.",
@@ -50,6 +68,16 @@ class UploadFileView(GenericAPIView):
             )
         
         if not file.content_type == "application/pdf":
+            track_user_analytics_event(
+                user_id=str(request.user.id),
+                event_data={
+                    "eventType": "upload",
+                    "status": "error",
+                    "totalMs": int((time.time() - start_time) * 1000),
+                    "documentName": file.name,
+                    "errorMessage": "Only PDF files are allowed.",
+                },
+            )
             return project_return(
                 message="Invalid file type.",
                 error="Only PDF files are allowed.",
@@ -58,6 +86,16 @@ class UploadFileView(GenericAPIView):
         
         validation = file_size_validate(file.size)
         if not validation:
+            track_user_analytics_event(
+                user_id=str(request.user.id),
+                event_data={
+                    "eventType": "upload",
+                    "status": "error",
+                    "totalMs": int((time.time() - start_time) * 1000),
+                    "documentName": file.name,
+                    "errorMessage": "File size exceeds configured limit.",
+                },
+            )
             return project_return(
                 message="File size exceeds limit.",
                 error=f"File size {convert_bytes_to_formatted_size(file.size)} exceeds maximum limit of {MAX_FILE_SIZE_MB}MB",
@@ -133,6 +171,18 @@ class UploadFileView(GenericAPIView):
                     f"File {file.name} uploaded successfully by user {request.user.id} "
                     f"with {uploaded_count} chunks"
                 )
+
+                track_user_analytics_event(
+                    user_id=str(request.user.id),
+                    event_data={
+                        "eventType": "upload",
+                        "status": "success",
+                        "totalMs": int((time.time() - start_time) * 1000),
+                        "documentId": str(file_resource.id),
+                        "documentName": file_resource.file_name,
+                        "sourceTypes": ["legal_document"],
+                    },
+                )
                 
                 return project_return(
                     message="File uploaded, processed, and stored successfully.",
@@ -142,6 +192,15 @@ class UploadFileView(GenericAPIView):
         
         except Exception as e:
             logger.error(f"File upload failed: {str(e)}")
+            track_user_analytics_event(
+                user_id=str(request.user.id),
+                event_data={
+                    "eventType": "upload",
+                    "status": "error",
+                    "totalMs": int((time.time() - start_time) * 1000),
+                    "errorMessage": str(e),
+                },
+            )
             return project_return(
                 message="File upload failed.",
                 error=str(e),
@@ -206,9 +265,20 @@ class AskGroqView(GenericAPIView):
         5. Return answer with citations
         """
 
+        start_time = time.time()
+
         # Step 1: Validate request
         request_obj = self.serializer_class(data=request.data)
         if not request_obj.is_valid():
+            track_user_analytics_event(
+                user_id=str(request.user.id),
+                event_data={
+                    "eventType": "chat",
+                    "status": "error",
+                    "totalMs": int((time.time() - start_time) * 1000),
+                    "errorMessage": "Invalid request parameters.",
+                },
+            )
             return project_return(
                 message="Invalid request parameters.",
                 error=request_obj.errors,
@@ -223,6 +293,18 @@ class AskGroqView(GenericAPIView):
         # Step 2: Verify file exists and user has access
         file_resource = FileResource.objects.filter(id=file_id, user_id=request.user).first()
         if file_resource is None:
+            track_user_analytics_event(
+                user_id=str(request.user.id),
+                event_data={
+                    "eventType": "chat",
+                    "status": "error",
+                    "totalMs": int((time.time() - start_time) * 1000),
+                    "documentId": file_id,
+                    "queryHash": hash_query_text(query),
+                    "querySample": (query or "")[:120],
+                    "errorMessage": "The requested file does not exist.",
+                },
+            )
             return project_return(
                     message="File not found.",
                     error="The requested file does not exist.",
@@ -241,9 +323,44 @@ class AskGroqView(GenericAPIView):
         )
 
         if not result:
+            track_user_analytics_event(
+                user_id=str(request.user.id),
+                event_data={
+                    "eventType": "chat",
+                    "status": "error",
+                    "totalMs": int((time.time() - start_time) * 1000),
+                    "documentId": file_id,
+                    "documentName": file_resource.file_name,
+                    "queryHash": hash_query_text(query),
+                    "querySample": (query or "")[:120],
+                    "model": model,
+                    "errorMessage": "An unexpected error occurred while processing your query.",
+                },
+            )
             return project_return(
                 message="Error processing query.",
                 error="An unexpected error occurred while processing your query. Please try again.",
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if result.get('error'):
+            track_user_analytics_event(
+                user_id=str(request.user.id),
+                event_data={
+                    "eventType": "chat",
+                    "status": "error",
+                    "totalMs": int((time.time() - start_time) * 1000),
+                    "documentId": file_id,
+                    "documentName": file_resource.file_name,
+                    "queryHash": hash_query_text(query),
+                    "querySample": (query or "")[:120],
+                    "model": model,
+                    "errorMessage": str(result.get('error')),
+                },
+            )
+            return project_return(
+                message="Error processing query.",
+                error=str(result.get('error')),
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
             
@@ -254,6 +371,37 @@ class AskGroqView(GenericAPIView):
             'confidence': result['confidence'],
             'metadata': result['metadata']
         }
+
+        metadata = result.get('metadata') or {}
+        groq_ms = metadata.get('groq_time_ms')
+        total_ms = metadata.get('processing_time_ms')
+        vector_ms = None
+        if isinstance(total_ms, int) and isinstance(groq_ms, int):
+            vector_ms = max(total_ms - groq_ms, 0)
+
+        source_labels = []
+        for source in result.get('sources', []):
+            label = source.get('section_title')
+            if label:
+                source_labels.append(str(label))
+
+        track_user_analytics_event(
+            user_id=str(request.user.id),
+            event_data={
+                "eventType": "chat",
+                "status": "success",
+                "totalMs": int(total_ms if isinstance(total_ms, int) else (time.time() - start_time) * 1000),
+                "vectorMs": vector_ms,
+                "groqMs": groq_ms if isinstance(groq_ms, int) else None,
+                "model": model,
+                "documentId": file_id,
+                "documentName": file_resource.file_name,
+                "queryHash": hash_query_text(query),
+                "querySample": (query or "")[:120],
+                "sourceLabels": source_labels,
+                "sourceTypes": ["legal_document"],
+            },
+        )
             
         return project_return(
             message="Query processed successfully.",
@@ -279,9 +427,19 @@ class RemoveUploadedFileView(GenericAPIView):
         Deletes a FileResource and its associated chunks from the vector database.
         Expects 'file_id' in request data to identify which file to delete.
         """
+        start_time = time.time()
         with transaction.atomic():
             file_id = kwargs.get('file_id')
             if not file_id:
+                track_user_analytics_event(
+                    user_id=str(request.user.id),
+                    event_data={
+                        "eventType": "delete",
+                        "status": "error",
+                        "totalMs": int((time.time() - start_time) * 1000),
+                        "errorMessage": "Please provide the correct file_id.",
+                    },
+                )
                 return project_return(
                     message="Invalid file_id.",
                     error="Please provide the correct file_id.",
@@ -290,6 +448,16 @@ class RemoveUploadedFileView(GenericAPIView):
             
             file_resource = FileResource.objects.filter(id=file_id, user_id=request.user).first()
             if not file_resource:
+                track_user_analytics_event(
+                    user_id=str(request.user.id),
+                    event_data={
+                        "eventType": "delete",
+                        "status": "error",
+                        "totalMs": int((time.time() - start_time) * 1000),
+                        "documentId": str(file_id),
+                        "errorMessage": "The specified file does not exist or permission denied.",
+                    },
+                )
                 return project_return(
                     message="File not found.",
                     error="The specified file does not exist or you do not have permission to delete it.",
@@ -304,6 +472,17 @@ class RemoveUploadedFileView(GenericAPIView):
             )
 
             if not delete_success:
+                track_user_analytics_event(
+                    user_id=str(request.user.id),
+                    event_data={
+                        "eventType": "delete",
+                        "status": "error",
+                        "totalMs": int((time.time() - start_time) * 1000),
+                        "documentId": str(file_id),
+                        "documentName": file_resource.file_name,
+                        "errorMessage": "Unknown vector delete error.",
+                    },
+                )
                 return project_return(
                     message="Failed to delete file vectors.",
                     error='Unknown vector delete error.',
@@ -311,7 +490,19 @@ class RemoveUploadedFileView(GenericAPIView):
                 )
             
             # Delete FileResource from SQLite
+            deleted_name = file_resource.file_name
             file_resource.delete()
+
+            track_user_analytics_event(
+                user_id=str(request.user.id),
+                event_data={
+                    "eventType": "delete",
+                    "status": "success",
+                    "totalMs": int((time.time() - start_time) * 1000),
+                    "documentId": str(file_id),
+                    "documentName": deleted_name,
+                },
+            )
             
             return project_return(
                 message="File deleted successfully.",
@@ -334,11 +525,21 @@ class RemoveAllUserUploadedFileView(GenericAPIView):
         """
         Deletes all FileResources and their associated chunks for the authenticated user.
         """
+        start_time = time.time()
         with transaction.atomic():
             user_id = request.user.id
             file_resources = FileResource.objects.filter(user_id=user_id)
             
             if not file_resources:
+                track_user_analytics_event(
+                    user_id=str(request.user.id),
+                    event_data={
+                        "eventType": "delete",
+                        "status": "error",
+                        "totalMs": int((time.time() - start_time) * 1000),
+                        "errorMessage": "You have no uploaded files to delete.",
+                    },
+                )
                 return project_return(
                     message="No files found.",
                     error="You have no uploaded files to delete.",
@@ -353,6 +554,15 @@ class RemoveAllUserUploadedFileView(GenericAPIView):
             )
 
             if not delete_result.get('success'):
+                track_user_analytics_event(
+                    user_id=str(request.user.id),
+                    event_data={
+                        "eventType": "delete",
+                        "status": "error",
+                        "totalMs": int((time.time() - start_time) * 1000),
+                        "errorMessage": delete_result.get('error', 'Unknown vector delete error.'),
+                    },
+                )
                 return project_return(
                     message="Failed to delete user vectors.",
                     error=delete_result.get('error', 'Unknown vector delete error.'),
@@ -360,9 +570,46 @@ class RemoveAllUserUploadedFileView(GenericAPIView):
                 )
             
             # Delete all FileResources from SQLite
+            deleted_count = len(file_ids)
             file_resources.delete()
+
+            track_user_analytics_event(
+                user_id=str(request.user.id),
+                event_data={
+                    "eventType": "delete",
+                    "status": "success",
+                    "totalMs": int((time.time() - start_time) * 1000),
+                    "documentName": f"bulk_delete_{deleted_count}_files",
+                },
+            )
             
             return project_return(
                 message="All your files have been deleted successfully.",
                 status=status.HTTP_200_OK
             )
+
+
+class PersonalAnalyticsView(GenericAPIView):
+    queryset = FileResource.objects.all()
+    serializer_class = None
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [UserRateThrottle]
+
+    @extend_schema(tags=["fileUpload"])
+    def get(self, request, *args, **kwargs):
+        window = request.query_params.get("window", "7d")
+        summary = get_user_analytics_summary(user_id=str(request.user.id), window=window)
+        return project_return(
+            message="Successfully fetched.",
+            data=summary,
+            status=status.HTTP_200_OK,
+        )
+
+    @extend_schema(tags=["fileUpload"])
+    def delete(self, request, *args, **kwargs):
+        clear_user_analytics(user_id=str(request.user.id))
+        return project_return(
+            message="Your analytics data has been cleared successfully.",
+            status=status.HTTP_200_OK,
+        )

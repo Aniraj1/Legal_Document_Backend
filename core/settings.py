@@ -151,6 +151,10 @@ REST_FRAMEWORK = {
 UPSTASH_VECTOR_REST_URL = config("UPSTASH_VECTOR_REST_URL", default="")
 UPSTASH_VECTOR_REST_TOKEN = config("UPSTASH_VECTOR_REST_TOKEN", default="")
 
+# Redis Configuration (Upstash REST)
+UPSTASH_REDIS_REST_URL = config("UPSTASH_REDIS_REST_URL", default="")
+UPSTASH_REDIS_REST_TOKEN = config("UPSTASH_REDIS_REST_TOKEN", default="")
+
 # Groq API Configuration (for RAG/Ask Groq feature)
 GROQ_API_KEY = config("GROQ_API_KEY", default="")
 
