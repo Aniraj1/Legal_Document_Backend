@@ -19,4 +19,7 @@ urlpatterns = [
     path(
         "get-files/", user_views.ListUserFilesView.as_view(), name="ListUserFilesView"
     ),
+    path(
+        "analytics/me/", user_views.PersonalAnalyticsView.as_view(), name="PersonalAnalyticsView"
+    ),
 ]
