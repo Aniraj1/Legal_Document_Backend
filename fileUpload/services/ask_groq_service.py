@@ -1,7 +1,8 @@
 import logging
 import time
+import re
 from django.conf import settings
-from fileUpload.services.vector_service import VectorService
+from fileUpload.services.langchain_document_service import LangChainDocumentService
 from fileUpload.model.fileresources import FileResource
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,7 @@ class AskGroqService:
     4. Including source citations in response
     """
 
-    SYSTEM_PROMPT = """You are a helpful document assistant. Your role is to answer questions ONLY based on the provided document context.
+    SYSTEM_PROMPT = """You are a helpful Legal assistant. Your role is to answer questions ONLY based on the provided document context.
 
 CRITICAL RULES:
 1. Only answer questions based on information in the provided context
@@ -28,6 +29,7 @@ CRITICAL RULES:
 4. Always cite which source/section your answer comes from
 5. If context is unclear, say "The document doesn't provide clear information on this"
 6. Be concise and factual
+7. Keep your tone polite and helpful.
 
 Document Context will follow. Answer ONLY from this context."""
 
@@ -36,12 +38,17 @@ Document Context will follow. Answer ONLY from this context."""
     DEFAULT_TEMPERATURE = 0.2
     DEFAULT_MAX_TOKENS = 700
     DEFAULT_TOP_K = 5
-    MIN_RETRIEVAL_SCORE = 0.3
-    MIN_CHUNKS_REQUIRED = 2
+    MIN_RETRIEVAL_SCORE = 0.2
+    MIN_CHUNKS_REQUIRED = 1
+
+    POLITE_NO_CONTEXT_ANSWER = (
+        "Sorry, I could not find that information in this document yet. "
+        "Please ask about a specific clause, section, date, or party, and I will do my best to help."
+    )
 
     def __init__(self):
-        """Initialize the service with vector DB access"""
-        self.vector_service = VectorService()
+        """Initialize the service with vector DB access via LangChain"""
+        self.document_service = LangChainDocumentService()
 
     def process_query(self, user_id, file_id, query, model=None, chat_history=None):
         """
@@ -78,6 +85,23 @@ Document Context will follow. Answer ONLY from this context."""
                 }
             
             # Step 2: Retrieve relevant chunks from vector DB
+            meta_answer = self._handle_meta_or_identity_query(query=query, file_obj=file_obj)
+            if meta_answer:
+                return {
+                    'answer': meta_answer,
+                    'sources': [],
+                    'confidence': 'high',
+                    'metadata': {
+                        'file_id': str(file_id),
+                        'file_name': file_obj.file_name,
+                        'chunks_retrieved': 0,
+                        'processing_time_ms': int((time.time() - start_time) * 1000),
+                        'model_used': model,
+                        'response_type': 'meta_or_identity'
+                    },
+                    'error': None
+                }
+
             chunks = self._retrieve_chunks(user_id, file_id, query, self.DEFAULT_TOP_K)
             chat_history = chat_history or []
             # Step 3: Validate retrieval quality
@@ -85,7 +109,7 @@ Document Context will follow. Answer ONLY from this context."""
             
             if not is_valid:
                 return {
-                    'answer': "I could not find sufficient information about this in the document. The document does not appear to contain relevant details on this topic.",
+                    'answer': self.POLITE_NO_CONTEXT_ANSWER,
                     'sources': [],
                     'confidence': 'none',
                     'metadata': {
@@ -172,20 +196,30 @@ Document Context will follow. Answer ONLY from this context."""
 
     def _retrieve_chunks(self, user_id, file_id, query, top_k=5):
         """
-        Query Upstash Vector DB for relevant chunks.
+        Query Upstash Vector DB for relevant chunks using LangChain service.
         
         Returns:
             list[dict]: Top K chunks with metadata and scores
         """
         try:
-            logger.debug(f"[AskGroqService] Retrieving chunks for user={user_id}, field={file_id}, query_length={len(query)}")
+            logger.debug(f"[AskGroqService] Retrieving chunks for user={user_id}, file={file_id}, query_length={len(query)}")
             
-            chunks = self.vector_service.search_document_chunks(
+            # Use LangChain service to search
+            results = self.document_service.search(
+                query=query,
                 user_id=str(user_id),
                 file_id=str(file_id),
-                query=query,
                 top_k=top_k
             )
+            
+            # Convert LangChain Document objects with scores to dict format
+            chunks = []
+            for doc, score in results:
+                chunks.append({
+                    'text': doc.page_content,
+                    'metadata': doc.metadata,
+                    'score': score,
+                })
             
             logger.info(f"[AskGroqService] Retrieved {len(chunks)} chunks")
             
@@ -193,6 +227,27 @@ Document Context will follow. Answer ONLY from this context."""
         except Exception as e:
             logger.error(f"[AskGroqService] Vector retrieval error: {str(e)}", exc_info=True)
             return []
+
+    def _handle_meta_or_identity_query(self, query, file_obj):
+        """
+        Handle non-content questions that should not depend on retrieval quality.
+        """
+        normalized_query = (query or "").strip().lower()
+        if not normalized_query:
+            return None
+
+        if re.search(r"\b(document\s*name|name\s*of\s*(the\s*)?document|file\s*name)\b", normalized_query):
+            return f"The document name is '{file_obj.file_name}'."
+
+        if re.search(r"\b(who\s*are\s*you|what\s*are\s*you|your\s*role)\b", normalized_query):
+            return (
+                "I am your document assistant. I can answer questions politely based only on the uploaded file's content."
+            )
+
+        if re.search(r"\b(hello|hi|hey|good\s*(morning|afternoon|evening))\b", normalized_query):
+            return "Hello. I am ready to help you with questions about this document."
+
+        return None
 
     def _validate_retrieval_quality(self, chunks, min_results=None):
         """
