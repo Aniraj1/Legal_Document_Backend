@@ -32,9 +32,9 @@ class AskGroqSerializer(serializers.Serializer):
         required=True,
         allow_blank=False,
         max_length=2000,
-        min_length=5,
+        min_length=1,
         trim_whitespace=True,
-        help_text="User question about the document (5-2000 characters)"
+        help_text="User question about the document (1-2000 characters)"
     )
     model = serializers.ChoiceField(
         required=False,
@@ -46,8 +46,10 @@ class AskGroqSerializer(serializers.Serializer):
         required=False,
         default=list,
         child=serializers.DictField(),
-        help_text="Optional prior turns for follow-up questions. Format: [{'role': 'user|assistant', 'content': '...'}]"
+        help_text="Optional prior turns for follow-up questions. Format: [{'role': 'user|assistant', 'content': '...'}]. If more than 20 messages are provided, only the latest 20 are used."
     )
+
+    MAX_CHAT_HISTORY_MESSAGES = 20
 
     def validate_chat_history(self, value):
         """
@@ -57,8 +59,9 @@ class AskGroqSerializer(serializers.Serializer):
             raise serializers.ValidationError("chat_history must be a list.")
 
         # Keep payload bounded for latency and token control.
-        if len(value) > 20:
-            raise serializers.ValidationError("chat_history supports at most 20 messages.")
+        # If the client sends more, keep only the latest messages instead of failing the request.
+        if len(value) > self.MAX_CHAT_HISTORY_MESSAGES:
+            value = value[-self.MAX_CHAT_HISTORY_MESSAGES:]
 
         validated = []
         for idx, item in enumerate(value):
@@ -90,3 +93,14 @@ class AskGroqSerializer(serializers.Serializer):
             })
 
         return validated
+
+    def validate_query(self, value):
+        """Allow short prompts, but reject inputs with no alphanumeric signal."""
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise serializers.ValidationError("query must not be empty.")
+
+        if not any(ch.isalnum() for ch in cleaned):
+            raise serializers.ValidationError("query must contain letters or numbers.")
+
+        return cleaned
