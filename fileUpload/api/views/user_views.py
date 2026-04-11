@@ -270,13 +270,18 @@ class AskGroqView(GenericAPIView):
         # Step 1: Validate request
         request_obj = self.serializer_class(data=request.data)
         if not request_obj.is_valid():
+            logger.warning(
+                "[AskGroqView] Invalid request parameters: errors=%s payload_keys=%s",
+                request_obj.errors,
+                list(request.data.keys()) if hasattr(request.data, 'keys') else []
+            )
             track_user_analytics_event(
                 user_id=str(request.user.id),
                 event_data={
                     "eventType": "chat",
                     "status": "error",
                     "totalMs": int((time.time() - start_time) * 1000),
-                    "errorMessage": "Invalid request parameters.",
+                    "errorMessage": f"Invalid request parameters: {request_obj.errors}",
                 },
             )
             return project_return(
@@ -284,11 +289,16 @@ class AskGroqView(GenericAPIView):
                 error=request_obj.errors,
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
-        file_id = str(request.data.get('file_id'))
-        query = request.data.get('query')
-        model = request.data.get('model', 'llama-3.1-8b-instant')
-        chat_history = request.data.get('chat_history', [])
+
+        validated_data = request_obj.validated_data
+        file_id = str(validated_data.get('file_id'))
+        query = validated_data.get('query')
+        model = validated_data.get('model', 'llama-3.1-8b-instant')
+        chat_history = validated_data.get('chat_history', [])
+
+        raw_chat_history = request.data.get('chat_history', [])
+        raw_chat_history_count = len(raw_chat_history) if isinstance(raw_chat_history, list) else 0
+        chat_history_truncated = raw_chat_history_count > len(chat_history)
         
         # Step 2: Verify file exists and user has access
         file_resource = FileResource.objects.filter(id=file_id, user_id=request.user).first()
@@ -371,6 +381,16 @@ class AskGroqView(GenericAPIView):
             'confidence': result['confidence'],
             'metadata': result['metadata']
         }
+
+        if chat_history_truncated:
+            data['metadata'] = data.get('metadata') or {}
+            data['metadata']['chat_history_warning'] = (
+                f"Chat history exceeded {len(chat_history)} messages. "
+                f"Only the latest {len(chat_history)} messages were used. "
+                "Please reload/start a new chat for best performance."
+            )
+            data['metadata']['chat_history_received'] = raw_chat_history_count
+            data['metadata']['chat_history_used'] = len(chat_history)
 
         metadata = result.get('metadata') or {}
         groq_ms = metadata.get('groq_time_ms')

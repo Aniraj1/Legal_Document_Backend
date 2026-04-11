@@ -157,6 +157,7 @@ UPSTASH_REDIS_REST_TOKEN = config("UPSTASH_REDIS_REST_TOKEN", default="")
 
 # Groq API Configuration (for RAG/Ask Groq feature)
 GROQ_API_KEY = config("GROQ_API_KEY", default="")
+GROQ_MAX_TOKENS = config("GROQ_MAX_TOKENS", cast=int, default=1200)
 
 # File Upload Configuration
 FILE_UPLOAD_MAX_SIZE_MB = 50
@@ -171,6 +172,18 @@ LANGCHAIN_CONFIG = {
     'CHUNK_SIZE': config('LANGCHAIN_CHUNK_SIZE', cast=int, default=1000),
     'CHUNK_OVERLAP': config('LANGCHAIN_CHUNK_OVERLAP', cast=int, default=100),
     'EMBEDDING_DIMENSION': config('LANGCHAIN_EMBEDDING_DIMENSION', cast=int, default=1024),
+}
+
+# Graph RAG Light Configuration (hybrid post-retrieval filtering/reranking)
+GRAPH_RAG_CONFIG = {
+    'ENABLED': config('GRAPH_RAG_ENABLED', cast=bool, default=True),
+    'RETRIEVAL_CANDIDATES': config('GRAPH_RAG_RETRIEVAL_CANDIDATES', cast=int, default=20),
+    'FINAL_TOP_K': config('GRAPH_RAG_FINAL_TOP_K', cast=int, default=5),
+    'MIN_HYBRID_SCORE': config('GRAPH_RAG_MIN_HYBRID_SCORE', cast=float, default=0.35),
+    'BASE_RANK_WEIGHT': config('GRAPH_RAG_BASE_RANK_WEIGHT', cast=float, default=0.7),
+    'TERM_MATCH_WEIGHT': config('GRAPH_RAG_TERM_MATCH_WEIGHT', cast=float, default=0.2),
+    'SECTION_MATCH_WEIGHT': config('GRAPH_RAG_SECTION_MATCH_WEIGHT', cast=float, default=0.1),
+    'KEEP_FALLBACK_WHEN_EMPTY': config('GRAPH_RAG_KEEP_FALLBACK_WHEN_EMPTY', cast=bool, default=True),
 }
 
 

@@ -38,8 +38,18 @@ Document Context will follow. Answer ONLY from this context."""
     DEFAULT_TEMPERATURE = 0.2
     DEFAULT_MAX_TOKENS = 700
     DEFAULT_TOP_K = 5
+    DEFAULT_RETRIEVAL_CANDIDATES = 20
     MIN_RETRIEVAL_SCORE = 0.2
     MIN_CHUNKS_REQUIRED = 1
+    STOPWORDS = {
+        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'to', 'for', 'of', 'in', 'on', 'at', 'by', 'with', 'from', 'as',
+        'and', 'or', 'but', 'if', 'then', 'than', 'that', 'this', 'these',
+        'those', 'it', 'its', 'into', 'about', 'within', 'over', 'under',
+        'what', 'which', 'who', 'whom', 'when', 'where', 'why', 'how', 'can',
+        'could', 'should', 'would', 'do', 'does', 'did', 'has', 'have', 'had',
+        'please', 'show', 'tell', 'explain', 'summarize', 'summary'
+    }
 
     POLITE_NO_CONTEXT_ANSWER = (
         "Sorry, I could not find that information in this document yet. "
@@ -49,6 +59,34 @@ Document Context will follow. Answer ONLY from this context."""
     def __init__(self):
         """Initialize the service with vector DB access via LangChain"""
         self.document_service = LangChainDocumentService()
+        self.graph_rag_config = self._load_graph_rag_config()
+        configured_max_tokens = getattr(settings, 'GROQ_MAX_TOKENS', self.DEFAULT_MAX_TOKENS)
+        try:
+            configured_max_tokens = int(configured_max_tokens)
+        except (TypeError, ValueError):
+            configured_max_tokens = self.DEFAULT_MAX_TOKENS
+
+        # Keep generation budget within a practical guardrail.
+        self.groq_max_tokens = max(128, min(configured_max_tokens, 4096))
+
+    def _load_graph_rag_config(self):
+        """Load Graph RAG configuration from settings with safe defaults."""
+        defaults = {
+            'ENABLED': True,
+            'RETRIEVAL_CANDIDATES': self.DEFAULT_RETRIEVAL_CANDIDATES,
+            'FINAL_TOP_K': self.DEFAULT_TOP_K,
+            'MIN_HYBRID_SCORE': 0.35,
+            'BASE_RANK_WEIGHT': 0.7,
+            'TERM_MATCH_WEIGHT': 0.2,
+            'SECTION_MATCH_WEIGHT': 0.1,
+            'KEEP_FALLBACK_WHEN_EMPTY': True,
+        }
+        configured = getattr(settings, 'GRAPH_RAG_CONFIG', {}) or {}
+        if not isinstance(configured, dict):
+            return defaults
+        merged = defaults.copy()
+        merged.update(configured)
+        return merged
 
     def process_query(self, user_id, file_id, query, model=None, chat_history=None):
         """
@@ -102,10 +140,28 @@ Document Context will follow. Answer ONLY from this context."""
                     'error': None
                 }
 
-            chunks = self._retrieve_chunks(user_id, file_id, query, self.DEFAULT_TOP_K)
+            candidate_k = int(self.graph_rag_config.get('RETRIEVAL_CANDIDATES', self.DEFAULT_RETRIEVAL_CANDIDATES))
+            chunks = self._retrieve_chunks(user_id, file_id, query, candidate_k)
+
+            hybrid_enabled = bool(self.graph_rag_config.get('ENABLED', True))
+            if hybrid_enabled:
+                filtered_chunks, filter_summary = self._filter_and_rerank_chunks(chunks, query)
+            else:
+                filtered_chunks = chunks[:self.DEFAULT_TOP_K]
+                filter_summary = {
+                    'enabled': False,
+                    'strategy': 'vector_only',
+                    'raw_retrieved_count': len(chunks),
+                    'kept_count': len(filtered_chunks),
+                    'dropped_count': max(len(chunks) - len(filtered_chunks), 0),
+                    'top_reasons': [],
+                }
+
+            self._log_retrieval_baseline(query=query, raw_chunks=chunks, filtered_chunks=filtered_chunks, summary=filter_summary)
+
             chat_history = chat_history or []
             # Step 3: Validate retrieval quality
-            is_valid, quality_msg = self._validate_retrieval_quality(chunks)
+            is_valid, quality_msg = self._validate_retrieval_quality(filtered_chunks)
             
             if not is_valid:
                 return {
@@ -116,6 +172,9 @@ Document Context will follow. Answer ONLY from this context."""
                         'file_id': str(file_id),
                         'file_name': file_obj.file_name,
                         'chunks_retrieved': 0,
+                        'pre_filter_chunks': len(chunks),
+                        'post_filter_chunks': len(filtered_chunks),
+                        'filter_summary': filter_summary,
                         'processing_time_ms': int((time.time() - start_time) * 1000),
                         'model_used': model,
                         'validation_message': quality_msg
@@ -124,7 +183,7 @@ Document Context will follow. Answer ONLY from this context."""
                 }
             
             # Step 4: Build context from chunks
-            context = self._build_context(chunks)
+            context = self._build_context(filtered_chunks)
             
             # Step 5: Call Groq API
             groq_start = time.time()
@@ -139,7 +198,10 @@ Document Context will follow. Answer ONLY from this context."""
                     'metadata': {
                         'file_id': str(file_id),
                         'file_name': file_obj.file_name,
-                        'chunks_retrieved': len(chunks),
+                        'chunks_retrieved': len(filtered_chunks),
+                        'pre_filter_chunks': len(chunks),
+                        'post_filter_chunks': len(filtered_chunks),
+                        'filter_summary': filter_summary,
                         'processing_time_ms': int((time.time() - start_time) * 1000),
                         'model_used': model
                     },
@@ -147,10 +209,10 @@ Document Context will follow. Answer ONLY from this context."""
                 }
             
             # Step 6: Extract citations from chunks
-            sources = self._extract_citations(chunks)
+            sources = self._extract_citations(filtered_chunks)
             
             # Step 7: Determine confidence level
-            confidence = self._calculate_confidence(chunks, answer)
+            confidence = self._calculate_confidence(filtered_chunks, answer)
             
             return {
                 'answer': answer,
@@ -159,7 +221,10 @@ Document Context will follow. Answer ONLY from this context."""
                 'metadata': {
                     'file_id': str(file_id),
                     'file_name': file_obj.file_name,
-                    'chunks_retrieved': len(chunks),
+                    'chunks_retrieved': len(filtered_chunks),
+                    'pre_filter_chunks': len(chunks),
+                    'post_filter_chunks': len(filtered_chunks),
+                    'filter_summary': filter_summary,
                     'processing_time_ms': int((time.time() - start_time) * 1000),
                     'groq_time_ms': int(groq_time * 1000),
                     'model_used': model
@@ -241,7 +306,7 @@ Document Context will follow. Answer ONLY from this context."""
 
         if re.search(r"\b(who\s*are\s*you|what\s*are\s*you|your\s*role)\b", normalized_query):
             return (
-                "I am your document assistant. I can answer questions politely based only on the uploaded file's content."
+                "I am your document assistant. I can answer questions based on the uploaded file's content."
             )
 
         if re.search(r"\b(hello|hi|hey|good\s*(morning|afternoon|evening))\b", normalized_query):
@@ -269,6 +334,168 @@ Document Context will follow. Answer ONLY from this context."""
             return False, f"Low relevance score: {score:.2f}"
         
         return True, "Retrieval quality validated"
+
+    def _extract_query_terms(self, query):
+        """Extract lightweight intent terms for graph-style reranking."""
+        tokens = re.findall(r"[a-zA-Z0-9_]+", (query or '').lower())
+        terms = []
+        for token in tokens:
+            if len(token) < 3:
+                continue
+            if token in self.STOPWORDS:
+                continue
+            terms.append(token)
+        # Preserve order while removing duplicates.
+        deduped = list(dict.fromkeys(terms))
+        return deduped[:20]
+
+    def _compute_chunk_hybrid_score(self, chunk, rank_index, total_count, query_terms):
+        """Score chunk using vector rank + metadata/query overlap signals."""
+        cfg = self.graph_rag_config
+        metadata = chunk.get('metadata', {}) or {}
+        text = (chunk.get('text') or '').lower()
+        section_title = str(metadata.get('section_title', '')).lower()
+
+        # Use retrieval order as robust base signal (works even if score semantics vary).
+        denominator = max(total_count - 1, 1)
+        rank_score = 1.0 - (rank_index / denominator)
+
+        text_match_count = sum(1 for term in query_terms if term in text)
+        section_match_count = sum(1 for term in query_terms if term and term in section_title)
+        keyword_match_count = 0
+        entity_match_count = 0
+
+        keywords = metadata.get('keywords', [])
+        entities = metadata.get('entities', [])
+        if isinstance(keywords, list):
+            keyword_blob = ' '.join(str(v).lower() for v in keywords)
+            keyword_match_count = sum(1 for term in query_terms if term in keyword_blob)
+        if isinstance(entities, list):
+            entity_blob = ' '.join(str(v).lower() for v in entities)
+            entity_match_count = sum(1 for term in query_terms if term in entity_blob)
+
+        base_rank_weight = float(cfg.get('BASE_RANK_WEIGHT', 0.7))
+        term_weight = float(cfg.get('TERM_MATCH_WEIGHT', 0.2))
+        section_weight = float(cfg.get('SECTION_MATCH_WEIGHT', 0.1))
+
+        term_bonus = min(text_match_count * 0.05, term_weight)
+        section_bonus = min(section_match_count * 0.05, section_weight)
+        metadata_bonus = min((keyword_match_count + entity_match_count) * 0.03, 0.15)
+        short_text_penalty = 0.05 if len(text) < 80 else 0.0
+
+        hybrid_score = (rank_score * base_rank_weight) + term_bonus + section_bonus + metadata_bonus - short_text_penalty
+        reasons = []
+        if text_match_count:
+            reasons.append(f'text_matches:{text_match_count}')
+        if section_match_count:
+            reasons.append(f'section_matches:{section_match_count}')
+        if keyword_match_count:
+            reasons.append(f'keyword_matches:{keyword_match_count}')
+        if entity_match_count:
+            reasons.append(f'entity_matches:{entity_match_count}')
+        if short_text_penalty > 0:
+            reasons.append('short_text_penalty')
+        if not reasons:
+            reasons.append('rank_only')
+
+        return hybrid_score, reasons
+
+    def _filter_and_rerank_chunks(self, chunks, query):
+        """Apply lightweight graph-style filtering and reranking."""
+        if not chunks:
+            return [], {
+                'enabled': True,
+                'strategy': 'hybrid_graph_rag_light',
+                'raw_retrieved_count': 0,
+                'kept_count': 0,
+                'dropped_count': 0,
+                'top_reasons': [],
+            }
+
+        query_terms = self._extract_query_terms(query)
+        min_hybrid = float(self.graph_rag_config.get('MIN_HYBRID_SCORE', 0.35))
+        final_top_k = int(self.graph_rag_config.get('FINAL_TOP_K', self.DEFAULT_TOP_K))
+        keep_fallback = bool(self.graph_rag_config.get('KEEP_FALLBACK_WHEN_EMPTY', True))
+
+        scored = []
+        dropped = []
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks):
+            hybrid_score, reasons = self._compute_chunk_hybrid_score(
+                chunk=chunk,
+                rank_index=idx,
+                total_count=total,
+                query_terms=query_terms,
+            )
+
+            updated_chunk = dict(chunk)
+            updated_chunk['hybrid_score'] = round(float(hybrid_score), 4)
+            updated_chunk['selection_reasons'] = reasons
+
+            if hybrid_score >= min_hybrid:
+                scored.append(updated_chunk)
+            else:
+                dropped.append(updated_chunk)
+
+        if not scored and keep_fallback:
+            fallback = []
+            for item in chunks[:final_top_k]:
+                clone = dict(item)
+                clone['hybrid_score'] = 0.0
+                clone['selection_reasons'] = ['vector_fallback']
+                fallback.append(clone)
+            summary = {
+                'enabled': True,
+                'strategy': 'hybrid_graph_rag_light',
+                'fallback_used': True,
+                'raw_retrieved_count': len(chunks),
+                'kept_count': len(fallback),
+                'dropped_count': max(len(chunks) - len(fallback), 0),
+                'query_terms': query_terms,
+                'top_reasons': ['vector_fallback'],
+            }
+            return fallback, summary
+
+        scored.sort(key=lambda c: c.get('hybrid_score', 0.0), reverse=True)
+        kept = scored[:final_top_k]
+
+        reason_counts = {}
+        for chunk in kept:
+            for reason in chunk.get('selection_reasons', []):
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+        top_reasons = [
+            reason
+            for reason, _ in sorted(reason_counts.items(), key=lambda item: item[1], reverse=True)[:5]
+        ]
+
+        summary = {
+            'enabled': True,
+            'strategy': 'hybrid_graph_rag_light',
+            'fallback_used': False,
+            'raw_retrieved_count': len(chunks),
+            'kept_count': len(kept),
+            'dropped_count': len(dropped),
+            'query_terms': query_terms,
+            'top_reasons': top_reasons,
+        }
+        return kept, summary
+
+    def _log_retrieval_baseline(self, query, raw_chunks, filtered_chunks, summary):
+        """Emit baseline retrieval telemetry for phase-1 measurement."""
+        logger.info(
+            "[RetrievalBaseline] query_len=%s raw=%s filtered=%s strategy=%s fallback=%s",
+            len(query or ''),
+            len(raw_chunks or []),
+            len(filtered_chunks or []),
+            summary.get('strategy'),
+            summary.get('fallback_used', False),
+        )
+        logger.info(
+            "[RetrievalBaseline] top_reasons=%s query_terms=%s",
+            summary.get('top_reasons', []),
+            summary.get('query_terms', []),
+        )
 
     def _build_context(self, chunks):
         """
@@ -359,7 +586,7 @@ Remember: Answer ONLY from the above context. Do not add external knowledge."""
             payload = {
                 "model": model,
                 "temperature": self.DEFAULT_TEMPERATURE,
-                "max_tokens": self.DEFAULT_MAX_TOKENS,
+                "max_tokens": self.groq_max_tokens,
                 "top_p": 0.9,
                 "messages": messages
             }
@@ -414,7 +641,9 @@ Remember: Answer ONLY from the above context. Do not add external knowledge."""
                 'chunk_id': chunk.get('vector_id', ''),
                 'section_title': metadata.get('section_title', 'Unknown'),
                 'content_preview': content_preview,
-                'relevance_score': round(chunk.get('score', 0), 4)
+                'relevance_score': round(chunk.get('score', 0), 4),
+                'hybrid_score': round(chunk.get('hybrid_score', 0), 4),
+                'selection_reasons': chunk.get('selection_reasons', []),
             }
             sources.append(source)
         
@@ -433,8 +662,8 @@ Remember: Answer ONLY from the above context. Do not add external knowledge."""
         if not answer or answer.startswith("I could not find"):
             return 'low'
         
-        # Check if top chunk has high relevance score
-        top_score = chunks[0].get('score', 0)
+        # Prefer hybrid score when present, otherwise fallback to raw score.
+        top_score = chunks[0].get('hybrid_score', chunks[0].get('score', 0))
         
         if top_score >= 0.8:
             return 'high'
