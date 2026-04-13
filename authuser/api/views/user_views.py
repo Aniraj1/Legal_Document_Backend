@@ -129,38 +129,38 @@ class UserDetail(GenericAPIView):
     permission_classes = [IsAuthenticated]
     throttle_classes = [UserRateThrottle]
 
-    # @extend_schema(tags=["authuser"])
-    # def get(self, request, *args, **kwargs):
-    #     user_obj = self.serializer_class(
-    #         self.get_queryset().objects.filter(user=request.user).first()
-    #     )
-    #     return project_return(
-    #         message="Successfully fetched.",
-    #         data=user_obj.data,
-    #         status=status.HTTP_200_OK,
-    #     )
 
     @extend_schema(tags=["authuser"])
     def post(self, request, *args, **kwargs):
         user_obj = self.serializer_class(data=request.data)
-        if user_obj.is_valid():
-            if models.UserDetail.objects.filter(user=request.user).first():
-                return project_return(
-                    message="User detail already exists.",
-                    error="Unable to post with this user.",
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            user_obj.save(user=request.user)
+        
+        if not request.data.get("first_name") or not request.data.get("last_name"):
             return project_return(
-                message="Successfully created.",
-                data=user_obj.data,
-                status=status.HTTP_201_CREATED,
+                message="Validation error.",
+                error="First name and last name are required.",
+                status=status.HTTP_400_BAD_REQUEST,
             )
+        
+        if not user_obj.is_valid():
+            return project_return(
+                message="Validation error.",
+                error=user_obj.errors,
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        if models.UserDetail.objects.filter(user=request.user).first():
+            return project_return(
+                message="User detail already exists.",
+                error="Unable to post with this user.",
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        user_obj.save(user=request.user)
         return project_return(
-            message="Validation error.",
-            error=user_obj.errors,
-            status=status.HTTP_400_BAD_REQUEST,
+            message="Successfully created.",
+            data=user_obj.data,
+            status=status.HTTP_201_CREATED,
         )
+        
     
     @extend_schema(tags=["authuser"])
     def put(self, request, *args, **kwargs):
@@ -170,6 +170,14 @@ class UserDetail(GenericAPIView):
         user_obj = self.serializer_class(
             user_detail_obj, data=request.data, partial=True
         )
+
+        if not request.data.get("first_name") or not request.data.get("last_name"):
+            return project_return(
+                message="Validation error.",
+                error="First name and last name are required.",
+                status=status.HTTP_400_BAD_REQUEST,
+            ) 
+
         if user_obj.is_valid():
             user_obj.save()
             return project_return(
@@ -246,6 +254,11 @@ class GenerateTokenFromRefresh(TokenViewBase):
     @extend_schema(tags=["authuser"])
     def post(self, request, *args, **kwargs):
         token_obj = self.get_serializer(data=request.data)
+        if not request.data.get("refresh"):
+            return project_return(
+                message="Refresh token is required.",
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             token_obj.is_valid(raise_exception=True)
         except TokenError as e:
