@@ -187,7 +187,7 @@ class UploadFileView(GenericAPIView):
                 return project_return(
                     message="File uploaded, processed, and stored successfully.",
                     data=data,
-                    status=status.HTTP_200_OK
+                    status=status.HTTP_201_CREATED,
                 )
         
         except Exception as e:
@@ -618,6 +618,9 @@ class PersonalAnalyticsView(GenericAPIView):
 
     @extend_schema(tags=["fileUpload"])
     def get(self, request, *args, **kwargs):
+        """
+        Fetches a summary of the user's analytics data.
+        """
         window = request.query_params.get("window", "7d")
         summary = get_user_analytics_summary(user_id=str(request.user.id), window=window)
         return project_return(
@@ -628,6 +631,9 @@ class PersonalAnalyticsView(GenericAPIView):
 
     @extend_schema(tags=["fileUpload"])
     def delete(self, request, *args, **kwargs):
+        """
+        Clears the user's analytics data.
+        """
         clear_user_analytics(user_id=str(request.user.id))
         return project_return(
             message="Your analytics data has been cleared successfully.",
